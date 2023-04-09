@@ -1,7 +1,7 @@
 import os
 import hashlib
 try:
-    import urequests as requests
+    import urequests
 except ImportError:
     print("No urequests found. Please provide your own library.")
 
@@ -24,8 +24,9 @@ class StingyOTA:
         repo = 'erika-esp32',
         branch = 'develop',
         subfolder = None,
-        requests_lib = requests, # type: ignore
-        version_file = '.version'
+        requests_lib = urequests, # type: ignore
+        version_file = '.version',
+        dry_run = False
         ):
         """
         branch (str): The branch to check for updates
@@ -81,20 +82,30 @@ class StingyOTA:
     def _get_tree(self, url = None):
         if not url:
             url = self.url
-        tree_json = self.requests_lib.get(url).json()
-        return tree_json
+        try:
+            # Github will block requests without a user-agent
+            resp = self.requests_lib.get(url=url, headers={'user-agent': 'micropython-device'})
+            if "\"message\":\"Not Found\"" in resp.text:
+                print(f"StingyOTA: Bad Response from Github. {resp.text} from {url}")
+            else:
+                return resp.json()
+        except ValueError:
+            raise Exception(f"StingyOTA: No valid JSON. Please check this URL: {url}")
+        
     
     def _get_local_hash(self):
         try:
             with open(self.version_file, 'r') as f:
                 return f.read()
-        except FileNotFoundError:
+        except OSError:
             print("StingyOTA: No local version file found, so update will be started.")
             return False
 
+    @property
     def has_new_version(self):
         tree_json = self._get_tree()
-        if tree_json['sha'] == self._get_local_hash():
+        self.remote_version = tree_json['sha']
+        if self.remote_version == self._get_local_hash():
             return False
         else:
             return True
@@ -104,11 +115,14 @@ class StingyOTA:
             with open(self.version_file, 'w') as f:
                 f.write(self.remote_version)
 
+    def _download_file_to_disk():
+        pass
+
     def _download_files(self):
         tree_json = self._get_tree()
         if self.subfolder:
             try:
-                subfolder_json_url = [item_path for item_path in tree_json['tree'] if item_path['path'].startswith(subfolder)]
+                subfolder_json_url = [item_path for item_path in tree_json['tree'] if item_path['path'].startswith(self.subfolder)]
                 subfolder_json_url = subfolder_json_url[0]['url']
                 subfolder_json_url += "?recursive=1" # adding recursive to get all files in one request
             except IndexError:
@@ -125,7 +139,7 @@ class StingyOTA:
         """
         Checks for new version and downloads the files on restart if there is a new version.
         """
-        if self.has_new_version():
+        if self.has_new_version:
             print("StingyOTA: New version found. Downloading files.")
             self._download_files()
             self._update_local_version()
